@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router
 from app.api.sections import router as sections_router
 from app.api.agent import router as agent_router
+from app.api.locations import router as locations_router
 from app.core.config import get_settings
 from app.db.mongo import ensure_indexes
 
@@ -26,6 +27,7 @@ app.add_middleware(
 app.include_router(router, prefix=settings.api_prefix)
 app.include_router(sections_router, prefix=settings.api_prefix)
 app.include_router(agent_router, prefix=settings.api_prefix)
+app.include_router(locations_router, prefix=settings.api_prefix)
 
 
 @app.get("/health")
