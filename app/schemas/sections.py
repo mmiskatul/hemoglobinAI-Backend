@@ -1,4 +1,4 @@
-from typing import Any, Literal
+from typing import Any
 from pydantic import BaseModel, Field
 
 
@@ -14,12 +14,6 @@ class InventoryUpdate(BaseModel):
 class ActionPayload(BaseModel):
     value: str | None = Field(default=None, max_length=2000)
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class SimulationRequest(BaseModel):
-    scenario: Literal["surge", "shortage", "weather", "routing"] = "surge"
-    blood_type: str = "O-"
-    parameters: dict[str, Any] = Field(default_factory=dict)
 
 
 class VitalsPayload(BaseModel):

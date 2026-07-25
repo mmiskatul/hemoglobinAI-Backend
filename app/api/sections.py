@@ -3,7 +3,7 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException
 from app.api.routes import current_user
 from app.db.mongo import get_database
-from app.schemas.sections import ActionPayload, AvailabilityUpdate, InventoryUpdate, SimulationRequest, VitalsPayload
+from app.schemas.sections import ActionPayload, AvailabilityUpdate, InventoryUpdate, VitalsPayload
 
 router = APIRouter()
 
@@ -100,40 +100,7 @@ async def complete_courier_task(task_id: str, payload: ActionPayload, user: dict
     result = await get_database().dispatches.update_one({"_id": ObjectId(task_id), "courier_id": str(user["_id"])}, {"$set": {"status": "completed", "proof": payload.model_dump(), "completed_at": now()}})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Task not found")
-    return {"status": "completed", "ledger_event": f"delivery-{task_id}"}
-
-
-@router.get("/ledger/{record_id}")
-async def ledger_record(record_id: str, user: dict = Depends(current_user)):
-    item = await get_database().ledger.find_one({"record_id": record_id})
-    if not item:
-        raise HTTPException(status_code=404, detail="Ledger record not found")
-    return {"record_id": record_id, "hash": item.get("hash"), "events": item.get("events", [])}
-
-
-@router.post("/simulations/run")
-async def run_simulation(payload: SimulationRequest, user: dict = Depends(current_user)):
-    result = {
-        "scenario": payload.scenario,
-        "blood_type": payload.blood_type,
-        "parameters": payload.parameters,
-        "recommendation": "Prioritize verified nearby donors and preserve emergency reserve capacity.",
-        "created_at": now(),
-    }
-    inserted = await get_database().simulations.insert_one({"owner_id": str(user["_id"]), **result})
-    return {"id": str(inserted.inserted_id), **result}
-
-
-@router.get("/control-room/couriers")
-async def control_room_couriers(user: dict = Depends(current_user)):
-    items = await get_database().dispatches.find({"status": {"$in": ["assigned", "in_transit"]}}).limit(100).to_list(length=100)
-    return {"couriers": [{"id": str(item["_id"]), "status": item["status"], "route": item.get("route")} for item in items]}
-
-
-@router.post("/control-room/logs")
-async def control_room_log(payload: ActionPayload, user: dict = Depends(current_user)):
-    result = await get_database().operation_logs.insert_one({"owner_id": str(user["_id"]), "payload": payload.model_dump(), "created_at": now()})
-    return {"id": str(result.inserted_id), "status": "recorded"}
+    return {"status": "completed"}
 
 
 @router.post("/requester/vitals")
