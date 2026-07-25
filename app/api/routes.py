@@ -40,7 +40,7 @@ async def register(payload: RegisterRequest):
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.verification_code_expire_minutes)
     result = await database.users.insert_one({
         "name": payload.name.strip(), "email": email, "password_hash": hash_password(payload.password),
-        "role": payload.role, "email_verified": False, "verification_code_hash": hash_refresh_token(code),
+        "role": payload.role, "profile": payload.details, "email_verified": False, "verification_code_hash": hash_refresh_token(code),
         "verification_expires_at": expires_at, "created_at": now(),
     })
     try:

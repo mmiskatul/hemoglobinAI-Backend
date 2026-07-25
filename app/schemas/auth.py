@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 from pydantic import BaseModel, EmailStr, Field
 
 
@@ -7,6 +7,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     role: Literal["requester", "donor", "hospital", "agent"] = "requester"
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class LoginRequest(BaseModel):
