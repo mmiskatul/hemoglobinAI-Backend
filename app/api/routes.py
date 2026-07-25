@@ -50,6 +50,10 @@ async def login(payload: LoginRequest):
     return TokenResponse(access_token=create_access_token(str(user["_id"])))
 
 
+@router.get("/auth/me")
+async def me(user: dict = Depends(current_user)):
+    return {"id": str(user["_id"]), "name": user.get("name"), "email": user.get("email"), "role": user.get("role")}
+
 @router.post("/requests", status_code=201)
 async def create_request(payload: CreateBloodRequest, user: dict = Depends(current_user)):
     database = get_database()
