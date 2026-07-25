@@ -1,3 +1,4 @@
+from collections import Counter
 from datetime import datetime, timezone
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException
@@ -36,15 +37,32 @@ async def chat_with_agent(payload: AgentChatRequest, user: dict = Depends(curren
     return {"conversation_id": str(conversation_id), "message": answer}
 
 
+@router.post("/agent/public-chat")
+async def public_chat(payload: AgentChatRequest):
+    database = get_database()
+    donors = await database.donors.find(
+        {"available": True, "consent_to_alerts": True},
+        {"_id": 0, "blood_type": 1, "area": 1},
+    ).limit(1000).to_list(length=1000)
+    counts = Counter((donor.get("blood_type", "unknown"), donor.get("area", "unknown")) for donor in donors)
+    public_context = [
+        {"blood_type": blood_type, "area": area, "available_count": count}
+        for (blood_type, area), count in sorted(counts.items())
+    ]
+    answer = await respond_to_dashboard(
+        payload.message,
+        payload.dashboard,
+        {"role": "public"},
+        [],
+        use_knowledge=False,
+        public_context=public_context,
+    )
+    return {"message": answer, "availability": public_context}
+
+
 @router.post("/agent/knowledge")
 async def ingest_knowledge(payload: KnowledgeUpsertRequest, user: dict = Depends(current_user)):
     if user.get("role") not in {"agent", "hospital"}:
         raise HTTPException(status_code=403, detail="Only agent or hospital users can ingest knowledge")
     record_id = await upsert_knowledge(payload.text, payload.source)
     return {"id": record_id, "status": "indexed"}
-
-
-@router.post("/agent/public-chat")
-async def public_chat(payload: AgentChatRequest):
-    answer = await respond_to_dashboard(payload.message, payload.dashboard, {"role": "public"}, [], use_knowledge=False)
-    return {"message": answer}

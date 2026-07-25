@@ -32,13 +32,30 @@ async def respond_to_request(request: dict, donors: list[dict], message: str) ->
     return response.output_text.strip() or fallback
 
 
-async def respond_to_dashboard(message: str, dashboard: str, user: dict, history: list[dict], use_knowledge: bool = True) -> str:
+def _availability_text(public_context: list[dict]) -> str:
+    if not public_context:
+        return "No currently available public donor summary was found. Ask for the city and blood type, or contact a hospital emergency desk."
+    rows = [
+        f"{item['blood_type']} in {item['area']}: {item['available_count']} available verified donor(s)"
+        for item in public_context
+    ]
+    return "Public availability summary: " + "; ".join(rows) + "."
+
+
+async def respond_to_dashboard(
+    message: str,
+    dashboard: str,
+    user: dict,
+    history: list[dict],
+    use_knowledge: bool = True,
+    public_context: list[dict] | None = None,
+) -> str:
     settings = get_settings()
+    availability = _availability_text(public_context or [])
     fallback = (
         f"I'm the Hemoglobin AI coordination agent for the {dashboard} dashboard. "
-        "I can help with requests, donors, hospital inventory, courier dispatch, notifications, "
-        "and ledger workflows. For emergencies, contact the hospital emergency desk immediately. "
-        "Please tell me what you need."
+        f"{availability} I can help identify the next safe step, but I cannot disclose private donor contact "
+        "details without consent. For emergencies, contact the hospital emergency desk immediately."
     )
     if not settings.openai_api_key:
         return fallback
@@ -50,13 +67,15 @@ async def respond_to_dashboard(message: str, dashboard: str, user: dict, history
         model=settings.openai_model,
         instructions=(
             "You are Hemoglobin AI's dashboard assistant. Help users navigate blood logistics workflows. "
-            "Use only the information provided in the conversation and retrieved knowledge. "
+            "Use only the supplied conversation, public registry summary, and retrieved knowledge. "
             "Never diagnose, guarantee blood availability, reveal private donor contact details, or "
-            "take irreversible medical actions. Ask for confirmation before sending notifications or "
-            "sharing personal information. Keep answers concise and actionable."
+            "take irreversible medical actions. Ask for the city and blood type when needed. "
+            "Ask for confirmation before sending notifications or sharing personal information. "
+            "Keep answers concise and actionable."
         ),
         input=[
             {"role": "user", "content": f"Dashboard: {dashboard}; User role: {user.get('role', 'unknown')}"},
+            {"role": "user", "content": "Public availability summary: " + json.dumps(public_context or [])},
             {"role": "user", "content": "Retrieved knowledge:\n" + "\n---\n".join(knowledge)},
             *safe_history,
             {"role": "user", "content": message},
