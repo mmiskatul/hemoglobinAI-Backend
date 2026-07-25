@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta, timezone
+import hashlib
+import secrets
 import jwt
 from pwdlib import PasswordHash
 from app.core.config import get_settings
@@ -27,3 +29,11 @@ def decode_access_token(token: str) -> str:
     if not subject:
         raise jwt.InvalidTokenError("Missing subject")
     return str(subject)
+
+
+def create_refresh_token() -> str:
+    return secrets.token_urlsafe(64)
+
+
+def hash_refresh_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()

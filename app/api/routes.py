@@ -1,10 +1,12 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import secrets
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from app.core.security import create_access_token, decode_access_token, hash_password, verify_password
+from app.core.security import create_access_token, create_refresh_token, decode_access_token, hash_password, hash_refresh_token, verify_password
 from app.db.mongo import get_database
-from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse
+from app.core.config import get_settings
+from app.schemas.auth import ForgotPasswordRequest, LoginRequest, RefreshTokenRequest, RegisterRequest, ResetPasswordRequest, TokenResponse, VerificationRequiredResponse, VerifyEmailRequest
 from app.schemas.requests import AgentMessageRequest, CreateBloodRequest
 from app.services.agent import respond_to_request
 from app.services.matching import find_matching_donors, now, public_donor
@@ -27,27 +29,95 @@ async def current_user(credentials: HTTPAuthorizationCredentials = Depends(beare
     return user
 
 
-@router.post("/auth/register", response_model=TokenResponse, status_code=201)
+@router.post("/auth/register", response_model=VerificationRequiredResponse, status_code=201)
 async def register(payload: RegisterRequest):
     database = get_database()
-    if await database.users.find_one({"email": payload.email.lower()}):
+    email = payload.email.lower()
+    if await database.users.find_one({"email": email}):
         raise HTTPException(status_code=409, detail="Email already registered")
+    code = f"{secrets.randbelow(1000000):06d}"
+    settings = get_settings()
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.verification_code_expire_minutes)
     result = await database.users.insert_one({
-        "name": payload.name.strip(),
-        "email": payload.email.lower(),
-        "password_hash": hash_password(payload.password),
-        "role": payload.role,
-        "created_at": now(),
+        "name": payload.name.strip(), "email": email, "password_hash": hash_password(payload.password),
+        "role": payload.role, "email_verified": False, "verification_code_hash": hash_refresh_token(code),
+        "verification_expires_at": expires_at, "created_at": now(),
     })
-    return TokenResponse(access_token=create_access_token(str(result.inserted_id)))
+    try:
+        await send_email(email, "Verify your Hemoglobin AI account", f"Your verification code is: {code}\nIt expires in {settings.verification_code_expire_minutes} minutes.")
+    except Exception:
+        await database.users.delete_one({"_id": result.inserted_id})
+        raise HTTPException(status_code=503, detail="Verification email could not be sent")
+    return VerificationRequiredResponse(email=email, message="Verification code sent. Check your email.")
+
+
+async def issue_tokens(user_id: str, database):
+    settings = get_settings()
+    refresh_token = create_refresh_token()
+    await database.sessions.insert_one({
+        "user_id": user_id, "token_hash": hash_refresh_token(refresh_token),
+        "expires_at": datetime.now(timezone.utc) + timedelta(days=settings.refresh_token_expire_days),
+        "revoked": False, "created_at": now(),
+    })
+    return TokenResponse(access_token=create_access_token(user_id), refresh_token=refresh_token)
+
+
+@router.post("/auth/verify-email", response_model=TokenResponse)
+async def verify_email(payload: VerifyEmailRequest):
+    database = get_database()
+    user = await database.users.find_one({"email": payload.email.lower()})
+    if not user or user.get("email_verified"):
+        raise HTTPException(status_code=400, detail="Invalid or already verified account")
+    if user.get("verification_expires_at", datetime.min.replace(tzinfo=timezone.utc)) < datetime.now(timezone.utc) or hash_refresh_token(payload.code) != user.get("verification_code_hash"):
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code")
+    await database.users.update_one({"_id": user["_id"]}, {"$set": {"email_verified": True}, "$unset": {"verification_code_hash": "", "verification_expires_at": ""}})
+    return await issue_tokens(str(user["_id"]), database)
 
 
 @router.post("/auth/login", response_model=TokenResponse)
 async def login(payload: LoginRequest):
-    user = await get_database().users.find_one({"email": payload.email.lower()})
+    database = get_database()
+    user = await database.users.find_one({"email": payload.email.lower()})
     if not user or not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    return TokenResponse(access_token=create_access_token(str(user["_id"])))
+    if not user.get("email_verified", False):
+        raise HTTPException(status_code=403, detail="Email verification required")
+    return await issue_tokens(str(user["_id"]), database)
+
+
+@router.post("/auth/refresh", response_model=TokenResponse)
+async def refresh_token(payload: RefreshTokenRequest):
+    database = get_database()
+    session = await database.sessions.find_one({"token_hash": hash_refresh_token(payload.refresh_token), "revoked": False, "expires_at": {"$gt": datetime.now(timezone.utc)}})
+    if not session:
+        raise HTTPException(status_code=401, detail="Refresh session expired or invalid")
+    await database.sessions.update_one({"_id": session["_id"]}, {"$set": {"revoked": True, "revoked_at": now()}})
+    return await issue_tokens(str(session["user_id"]), database)
+
+
+@router.post("/auth/forgot-password")
+async def forgot_password(payload: ForgotPasswordRequest):
+    database = get_database()
+    user = await database.users.find_one({"email": payload.email.lower()})
+    message = "If that email exists, a password reset code has been sent."
+    if not user:
+        return {"message": message}
+    code = f"{secrets.randbelow(1000000):06d}"
+    settings = get_settings()
+    await database.users.update_one({"_id": user["_id"]}, {"$set": {"reset_code_hash": hash_refresh_token(code), "reset_expires_at": datetime.now(timezone.utc) + timedelta(minutes=settings.password_reset_code_expire_minutes)}})
+    await send_email(user["email"], "Reset your Hemoglobin AI password", f"Your password reset code is: {code}\nIt expires in {settings.password_reset_code_expire_minutes} minutes.")
+    return {"message": message}
+
+
+@router.post("/auth/reset-password")
+async def reset_password(payload: ResetPasswordRequest):
+    database = get_database()
+    user = await database.users.find_one({"email": payload.email.lower()})
+    if not user or user.get("reset_code_hash") != hash_refresh_token(payload.code) or user.get("reset_expires_at", datetime.min.replace(tzinfo=timezone.utc)) < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Invalid or expired reset code")
+    await database.users.update_one({"_id": user["_id"]}, {"$set": {"password_hash": hash_password(payload.password)}, "$unset": {"reset_code_hash": "", "reset_expires_at": ""}})
+    await database.sessions.update_many({"user_id": str(user["_id"]), "revoked": False}, {"$set": {"revoked": True, "revoked_at": now()}})
+    return {"message": "Password reset successfully. Please sign in."}
 
 
 @router.get("/auth/me")
