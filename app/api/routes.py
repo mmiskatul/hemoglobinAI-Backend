@@ -6,7 +6,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.core.security import create_access_token, create_refresh_token, decode_access_token, hash_password, hash_refresh_token, verify_password
 from app.db.mongo import get_database
 from app.core.config import get_settings
-from app.schemas.auth import ForgotPasswordRequest, LoginRequest, RefreshTokenRequest, RegisterRequest, ResetPasswordRequest, TokenResponse, VerificationRequiredResponse, VerifyEmailRequest
+from app.schemas.auth import ForgotPasswordRequest, LoginRequest, RefreshTokenRequest, RegisterRequest, ResendVerificationRequest, ResetPasswordRequest, TokenResponse, VerificationRequiredResponse, VerifyEmailRequest
 from app.schemas.requests import AgentMessageRequest, CreateBloodRequest
 from app.services.agent import respond_to_request
 from app.services.matching import find_matching_donors, now, public_donor
@@ -14,6 +14,14 @@ from app.services.notifications import send_email
 
 router = APIRouter()
 bearer = HTTPBearer(auto_error=False)
+
+
+def expired(value) -> bool:
+    if not isinstance(value, datetime):
+        return True
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value < datetime.now(timezone.utc)
 
 
 async def current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer)):
@@ -68,10 +76,23 @@ async def verify_email(payload: VerifyEmailRequest):
     user = await database.users.find_one({"email": payload.email.lower()})
     if not user or user.get("email_verified"):
         raise HTTPException(status_code=400, detail="Invalid or already verified account")
-    if user.get("verification_expires_at", datetime.min.replace(tzinfo=timezone.utc)) < datetime.now(timezone.utc) or hash_refresh_token(payload.code) != user.get("verification_code_hash"):
+    if expired(user.get("verification_expires_at")) or hash_refresh_token(payload.code) != user.get("verification_code_hash"):
         raise HTTPException(status_code=400, detail="Invalid or expired verification code")
     await database.users.update_one({"_id": user["_id"]}, {"$set": {"email_verified": True}, "$unset": {"verification_code_hash": "", "verification_expires_at": ""}})
     return await issue_tokens(str(user["_id"]), database)
+
+
+@router.post("/auth/resend-verification")
+async def resend_verification(payload: ResendVerificationRequest):
+    database = get_database()
+    user = await database.users.find_one({"email": payload.email.lower()})
+    if not user or user.get("email_verified"):
+        return {"message": "If the account exists and is unverified, a verification code has been sent."}
+    code = f"{secrets.randbelow(1000000):06d}"
+    settings = get_settings()
+    await database.users.update_one({"_id": user["_id"]}, {"$set": {"verification_code_hash": hash_refresh_token(code), "verification_expires_at": datetime.now(timezone.utc) + timedelta(minutes=settings.verification_code_expire_minutes)}})
+    await send_email(user["email"], "Your Hemoglobin AI verification code", f"Your verification code is: {code}\nIt expires in {settings.verification_code_expire_minutes} minutes.")
+    return {"message": "If the account exists and is unverified, a verification code has been sent."}
 
 
 @router.post("/auth/login", response_model=TokenResponse)
@@ -113,7 +134,7 @@ async def forgot_password(payload: ForgotPasswordRequest):
 async def reset_password(payload: ResetPasswordRequest):
     database = get_database()
     user = await database.users.find_one({"email": payload.email.lower()})
-    if not user or user.get("reset_code_hash") != hash_refresh_token(payload.code) or user.get("reset_expires_at", datetime.min.replace(tzinfo=timezone.utc)) < datetime.now(timezone.utc):
+    if not user or user.get("reset_code_hash") != hash_refresh_token(payload.code) or expired(user.get("reset_expires_at")):
         raise HTTPException(status_code=400, detail="Invalid or expired reset code")
     await database.users.update_one({"_id": user["_id"]}, {"$set": {"password_hash": hash_password(payload.password)}, "$unset": {"reset_code_hash": "", "reset_expires_at": ""}})
     await database.sessions.update_many({"user_id": str(user["_id"]), "revoked": False}, {"$set": {"revoked": True, "revoked_at": now()}})
