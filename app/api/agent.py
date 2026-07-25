@@ -42,3 +42,9 @@ async def ingest_knowledge(payload: KnowledgeUpsertRequest, user: dict = Depends
         raise HTTPException(status_code=403, detail="Only agent or hospital users can ingest knowledge")
     record_id = await upsert_knowledge(payload.text, payload.source)
     return {"id": record_id, "status": "indexed"}
+
+
+@router.post("/agent/public-chat")
+async def public_chat(payload: AgentChatRequest):
+    answer = await respond_to_dashboard(payload.message, payload.dashboard, {"role": "public"}, [], use_knowledge=False)
+    return {"message": answer}

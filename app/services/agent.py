@@ -32,7 +32,7 @@ async def respond_to_request(request: dict, donors: list[dict], message: str) ->
     return response.output_text.strip() or fallback
 
 
-async def respond_to_dashboard(message: str, dashboard: str, user: dict, history: list[dict]) -> str:
+async def respond_to_dashboard(message: str, dashboard: str, user: dict, history: list[dict], use_knowledge: bool = True) -> str:
     settings = get_settings()
     fallback = (
         f"I'm the Hemoglobin AI coordination agent for the {dashboard} dashboard. "
@@ -44,7 +44,7 @@ async def respond_to_dashboard(message: str, dashboard: str, user: dict, history
         return fallback
 
     client = AsyncOpenAI(api_key=settings.openai_api_key)
-    knowledge = await retrieve_context(message)
+    knowledge = await retrieve_context(message) if use_knowledge else []
     safe_history = [{"role": item["role"], "content": item["content"]} for item in history[-12:]]
     response = await client.responses.create(
         model=settings.openai_model,
